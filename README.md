@@ -1,21 +1,16 @@
 # Magnolia
 
-**TODO: Add description**
-
-## Installation
-
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `magnolia` to your list of dependencies in `mix.exs`:
-
 ```elixir
 def deps do
   [
-    {:magnolia, "~> 0.1.0"}
+    {:magnolia, github: "Leastrio/magnolia"}
   ]
 end
 ```
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
+Documentation can
 be found at <https://hexdocs.pm/magnolia>.
 
+---
+## Credits
+Lots of credits given to the many who contributed to [Nostrum](https://github.com/Kraigie/nostrum), lots of inspiration taken from this lib.
