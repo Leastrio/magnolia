@@ -1,8 +1,14 @@
 defmodule Magnolia.Event do
   require Logger
 
-  def handle(%{op: 0, d: payload, t: name}, data) do
-    if name == :READY do
+  def handle(%{op: 0, d: payload, t: event_name}, data) do
+    payload = Magnolia.Utils.to_atom_keys(payload)
+    
+    {event_name, payload}
+    |> Magnolia.Payload.cast_payload()
+    |> Magnolia.Payload.dispatch_event(data)
+
+    if event_name == :READY do
       %{data | resume_gateway_url: payload.resume_gateway_url, session_id: payload.session_id}
     else
       data
@@ -79,5 +85,4 @@ defmodule Magnolia.Event do
       }
     }
   end
-
 end

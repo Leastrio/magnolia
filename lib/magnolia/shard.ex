@@ -21,6 +21,7 @@ defmodule Magnolia.Shard do
     field :heartbeat_ack, boolean(), default: true
     field :resume_gateway_url, String.t()
     field :session_id, String.t()
+    field :consumer_module, module()
   end
 
   def start_link(config) do
@@ -143,11 +144,12 @@ defmodule Magnolia.Shard do
     end
   end
 
+  defp handle_response(_resp, data), do: data
+
   defp handle_frame({:binary, frame}, data) do
     payload = :zlib.inflate(data.zlib, frame)
     |> :erlang.iolist_to_binary()
     |> :erlang.binary_to_term()
-    |> IO.inspect()
 
     data = %{data | seq: payload.s || data.seq}
 
@@ -172,6 +174,8 @@ defmodule Magnolia.Shard do
       close(data)
     end
   end
+
+  defp handle_frame(_frame, data), do: {:keep_state, data}
 
   defp send_frame(data, frame) do
     with {:ok, websocket, frame_data} <- Mint.WebSocket.encode(data.websocket, frame),
@@ -204,7 +208,7 @@ defmodule Magnolia.Shard do
 
   defp close(data, reason \\ :normal) do
     if reason == :normal do
-      send_frame(data, {:close, 1000, nil})
+      send_frame(data, {:close, 1000, ""})
     end
     Mint.HTTP.close(data.conn)
     {:stop, reason}
