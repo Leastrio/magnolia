@@ -59,6 +59,13 @@ defmodule Magnolia.Shard do
 
       data = %{data | zlib: zlib, conn: conn, request_ref: ref}
       {:next_state, :connected, data}
+    else
+      {:error, reason} -> 
+        Logger.error("Connecting to gateway HTTP failed: #{inspect(reason)}")
+        {:stop, :http_connect_error}
+      {:error, _conn, reason} -> 
+        Logger.error("Upgrading to WS failed: #{inspect(reason)}")
+        {:stop, :ws_upgrade_error}
     end
   end
 
@@ -68,7 +75,7 @@ defmodule Magnolia.Shard do
 
   def connected(:info, :heartbeat, data) do
     if data.heartbeat_ack do
-      Logger.debug("Heartbeat send")
+      Logger.debug("Heartbeat Send")
       resp = :erlang.term_to_binary(%{"op" => 1, "d" => data.seq})
       data = send_frame(data, {:binary, resp})
       timer_ref = Process.send_after(self(), :heartbeat, data.heartbeat_interval)
@@ -111,18 +118,22 @@ defmodule Magnolia.Shard do
   end
 
   defp handle_tcp_message([{:status, ref, status}, {:headers, ref, headers} | frames], %{request_ref: ref} = data) do
-    with {:ok, conn, websocket} <- Mint.WebSocket.new(data.conn, ref, status, headers) do
-      data = %{data | conn: conn, websocket: websocket}
-      data_frame = Enum.find(frames, fn 
-        {:data, ^ref, _data} = frame -> frame
-        _ -> nil
-      end)
+    case Mint.WebSocket.new(data.conn, ref, status, headers) do
+      {:ok, conn, websocket} ->
+        data = %{data | conn: conn, websocket: websocket}
+        data_frame = Enum.find(frames, fn 
+          {:data, ^ref, _data} = frame -> frame
+          _ -> nil
+        end)
 
-      if data_frame do
-        handle_tcp_message([data_frame], data)
-      else
-        {:keep_state, data}
-      end
+        if data_frame do
+          handle_tcp_message([data_frame], data)
+        else
+          {:keep_state, data}
+        end
+      {:error, _conn, reason} -> 
+        Logger.error("Error finalizing WS connection: #{inspect(reason)}")
+        {:stop, :ws_upgrade_error}
     end
   end
 
