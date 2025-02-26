@@ -32,13 +32,16 @@ defmodule Magnolia.Event do
       {data, :reconnect}
     else
       Logger.info("Invalid Session, disconnecting")
-      {data, :close}
+      {data, {:close, :invalid_session}}
     end
   end
 
   def handle(%{op: 10, d: %{heartbeat_interval: interval}}, data) do
-    data = %{data | heartbeat_interval: interval}
-    Process.send_after(self(), :heartbeat, trunc(:rand.uniform() * interval))
+    if data.timer_ref do
+      Process.cancel_timer(data.timer_ref)
+    end
+    timer_ref = Process.send_after(self(), :heartbeat, trunc(:rand.uniform() * interval))
+    data = %{data | heartbeat_interval: interval, timer_ref: timer_ref}
     if not is_nil(data.session_id) do
       Logger.info("Resuming session #{data.session_id}")
       {data, resume_payload(data)}
@@ -54,6 +57,7 @@ defmodule Magnolia.Event do
   end
 
   def handle(payload, data) do
+    Logger.warning("Unhandled event #{inspect(payload)}")
     data
   end
 

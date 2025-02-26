@@ -2,7 +2,7 @@ defmodule Magnolia.Struct.BotState do
   use TypedStruct
 
   @derive {Inspect, except: [:token]}
-  typedstruct do
+  typedstruct enforce: true do
     field :token, String.t()
     field :bot_id, non_neg_integer()
     field :shard_id, non_neg_integer()

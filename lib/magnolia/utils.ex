@@ -30,4 +30,6 @@ defmodule Magnolia.Utils do
   end
   defp to_atom(term), do: term
 
+  def to_via(tuple), do: {:via, Registry, {Magnolia.Registry, tuple}}
+
 end

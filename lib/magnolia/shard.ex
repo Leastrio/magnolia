@@ -12,9 +12,6 @@ defmodule Magnolia.Shard do
     field :conn, Mint.HTTP1.t()
     field :websocket, Mint.WebSocket.t()
     field :request_ref, Mint.Types.request_ref()
-    field :resp_status, Mint.Types.status()
-    field :resp_headers, Mint.Types.headers()
-    field :queued_resp, Mint.Types.response()
     field :zlib, :zlib.zstream()
     field :seq, non_neg_integer()
     field :heartbeat_interval, non_neg_integer()
@@ -22,6 +19,7 @@ defmodule Magnolia.Shard do
     field :resume_gateway_url, String.t()
     field :session_id, String.t()
     field :consumer_module, module()
+    field :timer_ref, reference()
   end
 
   def start_link(config) do
@@ -47,39 +45,25 @@ defmodule Magnolia.Shard do
   def disconnected(:internal, :connect, data) do
     uri = URI.parse(data.gateway_url)
 
-    {http_scheme, ws_scheme} =
-      case uri.scheme do
-        "ws" -> {:http, :ws}
-        "wss" -> {:https, :wss}
-      end
-
     path = "/?v=10&encoding=etf&compress=zlib-stream" 
 
     mint_opts = [
       protocols: [:http1]
     ]
 
-    with {:ok, conn} <- Mint.HTTP.connect(http_scheme, uri.host, uri.port, mint_opts),
-         {:ok, conn, ref} <- Mint.WebSocket.upgrade(ws_scheme, conn, path, []) do
-      Logger.debug("WS successfully upgraded")
+    with {:ok, conn} <- Mint.HTTP.connect(:https, uri.host, uri.port, mint_opts),
+         {:ok, conn, ref} <- Mint.WebSocket.upgrade(:wss, conn, path, []) do
+      Logger.debug("WS successfully connected")
       zlib = :zlib.open()
       :zlib.inflateInit(zlib)
 
       data = %{data | zlib: zlib, conn: conn, request_ref: ref}
       {:next_state, :connected, data}
-    else
-      {:error, reason} ->
-        Logger.error("Connecting to gateway failed: #{inspect(reason)}")
-        {:stop, :http_connect_error}
-
-      {:error, _conn, reason} -> 
-        Logger.error("Upgrading to WS failed: #{inspect(reason)}")
-        {:stop, :ws_upgrade_error}
     end
   end
 
   def disconnected(:internal, :reconnect, data) do
-    disconnected(:internal, :connect, %{data | gateway_url: data.resume_gateway_url, resume_gateway_url: nil})
+    disconnected(:internal, :connect, %{data | gateway_url: data.resume_gateway_url})
   end
 
   def connected(:info, :heartbeat, data) do
@@ -87,8 +71,8 @@ defmodule Magnolia.Shard do
       Logger.debug("Heartbeat send")
       resp = :erlang.term_to_binary(%{"op" => 1, "d" => data.seq})
       data = send_frame(data, {:binary, resp})
-      Process.send_after(self(), :heartbeat, data.heartbeat_interval)
-      {:keep_state, %{data | heartbeat_ack: false}}
+      timer_ref = Process.send_after(self(), :heartbeat, data.heartbeat_interval)
+      {:keep_state, %{data | heartbeat_ack: false, timer_ref: timer_ref}}
     else
       Logger.debug("No ACK returned, disconnecting.")
       close(data, :heartbeat_ack_false)
@@ -97,8 +81,8 @@ defmodule Magnolia.Shard do
 
   def connected(:info, msg, data) do
     case Mint.WebSocket.stream(data.conn, msg) do
-      {:ok, conn, responses} -> 
-        Enum.reduce(responses, %{data | conn: conn}, &handle_response/2)
+      {:ok, conn, tcp_msg} -> 
+        handle_tcp_message(tcp_msg, %{data | conn: conn})
 
       {:error, conn, reason, _responses} -> 
         Logger.error("WS streaming failed: #{inspect(reason)}")
@@ -109,42 +93,44 @@ defmodule Magnolia.Shard do
     end
   end
 
-  defp handle_response({:status, ref, status}, %{request_ref: ref} = data) do
-    %{data | resp_status: status}
-  end
-  
-  defp handle_response({:headers, ref, headers}, %{request_ref: ref} = data) do
-    %{data | resp_headers: headers}
-  end
+  def connected(:cast, :close, data) do
+    send_frame(data, {:close, 1002, ""})
+    Mint.HTTP.close(data.conn)
 
-  defp handle_response({:done, ref}, %{request_ref: ref} = data) do
-    case Mint.WebSocket.new(data.conn, ref, data.resp_status, data.resp_headers) do
-      {:ok, conn, websocket} -> 
-        data = %{data | conn: conn, websocket: websocket, resp_status: nil, resp_headers: nil}
-        handle_response(data.queued_resp, data)
+    data = %__MODULE__{
+      bot_state: data.bot_state,
+      gateway_url: data.gateway_url,
+      seq: data.seq,
+      resume_gateway_url: data.resume_gateway_url,
+      session_id: data.session_id,
+      consumer_module: data.consumer_module,
+      timer_ref: data.timer_ref
+    }
 
-      {:error, conn, reason} -> 
-        Logger.error("Error finalizing WS connection: #{inspect(reason)}")
-        %{data | conn: conn}
-    end
+    {:next_state, :disconnected, data, {:next_event, :internal, :reconnect}}
   end
 
-  defp handle_response({:data, ref, frame_data} = resp, %{request_ref: ref} = data) do
-    if data.websocket != nil do
-      case Mint.WebSocket.decode(data.websocket, frame_data) do
-        {:ok, websocket, [frame]} -> 
-          handle_frame(frame, %{data | websocket: websocket})
+  defp handle_tcp_message([{:status, ref, status}, {:headers, ref, headers} | frames], %{request_ref: ref} = data) do
+    with {:ok, conn, websocket} <- Mint.WebSocket.new(data.conn, ref, status, headers) do
+      data = %{data | conn: conn, websocket: websocket}
+      data_frame = Enum.find(frames, fn 
+        {:data, ^ref, _data} = frame -> frame
+        _ -> nil
+      end)
 
-        {:error, websocket, reason} -> 
-          Logger.error("WS data decode error: #{inspect(reason)}")
-          %{data | websocket: websocket}
+      if data_frame do
+        handle_tcp_message([data_frame], data)
+      else
+        {:keep_state, data}
       end
-    else
-      %{data | queued_resp: resp}
     end
   end
 
-  defp handle_response(_resp, data), do: data
+  defp handle_tcp_message([{:data, ref, frame_data}], %{request_ref: ref} = data) do
+    with {:ok, websocket, [frame]} <- Mint.WebSocket.decode(data.websocket, frame_data) do
+      handle_frame(frame, %{data | websocket: websocket})
+    end
+  end
 
   defp handle_frame({:binary, frame}, data) do
     payload = :zlib.inflate(data.zlib, frame)
@@ -155,9 +141,9 @@ defmodule Magnolia.Shard do
 
     case Event.handle(payload, data) do
       {new_data, :reconnect} -> 
-        reconnect(data)
-      {new_data, :close} -> 
-        close(data)
+        reconnect(new_data)
+      {new_data, {:close, reason}} -> 
+        close(new_data, reason)
       {new_data, reply} ->
         new_data = send_frame(new_data, {:binary, :erlang.term_to_binary(reply)})
         {:keep_state, new_data}
@@ -171,7 +157,7 @@ defmodule Magnolia.Shard do
     if code in [4000, 4001, 4002, 4003, 4005, 4007, 4008, 4009] do
       reconnect(data)
     else
-      close(data)
+      close(data, :connection_closed)
     end
   end
 
@@ -200,16 +186,16 @@ defmodule Magnolia.Shard do
       gateway_url: data.gateway_url,
       seq: data.seq,
       resume_gateway_url: data.resume_gateway_url,
-      session_id: data.session_id
+      session_id: data.session_id,
+      consumer_module: data.consumer_module,
+      timer_ref: data.timer_ref
     }
 
     {:next_state, :disconnected, data, {:next_event, :internal, :reconnect}}
   end
 
   defp close(data, reason \\ :normal) do
-    if reason == :normal do
-      send_frame(data, {:close, 1000, ""})
-    end
+    send_frame(data, {:close, 1000, ""})
     Mint.HTTP.close(data.conn)
     {:stop, reason}
   end
