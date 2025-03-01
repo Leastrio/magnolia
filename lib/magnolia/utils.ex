@@ -1,7 +1,7 @@
 defmodule Magnolia.Utils do
   require Logger
 
-  def parse_token(token) do
+  def get_bot_id(token) do
     [id, _, _] = String.split(token, ".")
 
     Base.decode64!(id, padding: false)

@@ -23,19 +23,22 @@ defmodule Magnolia.Bot do
 
   def start_link(opts) do
     opts = struct(__MODULE__, opts)
-    bot_id = Utils.parse_token(opts.token)
+    bot_ctx = %Struct.BotContext{
+      token: opts.token,
+      bot_id: Utils.get_bot_id(opts.token)
+    }
 
-    Supervisor.start_link(__MODULE__, {opts, bot_id}, name: Utils.to_via({__MODULE__, bot_id}))
+    Supervisor.start_link(__MODULE__, {bot_ctx, opts}, name: Utils.to_via({__MODULE__, bot_ctx.bot_id}))
   end
 
   @doc false
-  def init({opts, bot_id}) do
-    gateway_bot = Api.get_gateway_bot(opts.token)
+  def init({bot_ctx, opts}) do
+    #gateway_bot = Api.get_gateway_bot(bot_ctx)
+    gateway_bot = %{"url" => "wss://gateway.discord.gg"}
 
     shard_config = %Magnolia.Shard{
-      bot_state: %Struct.BotState{
-        token: opts.token,
-        bot_id: bot_id,
+      bot_ctx: %Struct.BotContext{ 
+        bot_ctx |
         shard_id: 0,
         total_shards: 1
       },
@@ -47,8 +50,9 @@ defmodule Magnolia.Bot do
       {
         PartitionSupervisor,
         child_spec: Task.Supervisor,
-        name: {:via, Registry, {Magnolia.Registry, {Magnolia.TaskSupervisors, bot_id}}}
+        name: {:via, Registry, {Magnolia.Registry, {Magnolia.TaskSupervisors, bot_ctx.bot_id}}}
       },
+      {Magnolia.Ratelimiter, bot_ctx.bot_id},
       {Magnolia.Shard, shard_config}
     ]
 

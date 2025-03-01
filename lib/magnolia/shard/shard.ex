@@ -1,13 +1,13 @@
 defmodule Magnolia.Shard do
   require Logger
-  alias Magnolia.Event
-  alias Magnolia.Struct.BotState
+  alias Magnolia.Shard.Event
+  alias Magnolia.Struct.BotContext
   use TypedStruct
 
   @behaviour :gen_statem
 
   typedstruct do
-    field :bot_state, BotState
+    field :bot_ctx, BotContext
     field :gateway_url, String.t()
     field :conn, Mint.HTTP1.t()
     field :websocket, Mint.WebSocket.t()
@@ -39,6 +39,7 @@ defmodule Magnolia.Shard do
   end
 
   def init(data) do
+    data = put_in(data.bot_ctx.shard_pid, self())
     {:ok, :disconnected, data, {:next_event, :internal, :connect}}
   end
 
@@ -100,21 +101,9 @@ defmodule Magnolia.Shard do
     end
   end
 
-  def connected(:cast, :close, data) do
-    send_frame(data, {:close, 1002, ""})
-    Mint.HTTP.close(data.conn)
-
-    data = %__MODULE__{
-      bot_state: data.bot_state,
-      gateway_url: data.gateway_url,
-      seq: data.seq,
-      resume_gateway_url: data.resume_gateway_url,
-      session_id: data.session_id,
-      consumer_module: data.consumer_module,
-      timer_ref: data.timer_ref
-    }
-
-    {:next_state, :disconnected, data, {:next_event, :internal, :reconnect}}
+  def connected(:cast, {:update_presence, payload}, data) do
+    data = send_frame(data, {:binary, :erlang.term_to_binary(payload)})
+    {:keep_state, data}
   end
 
   defp handle_tcp_message([{:status, ref, status}, {:headers, ref, headers} | frames], %{request_ref: ref} = data) do
@@ -151,15 +140,15 @@ defmodule Magnolia.Shard do
     data = %{data | seq: payload.s || data.seq}
 
     case Event.handle(payload, data) do
-      {new_data, :reconnect} -> 
-        reconnect(new_data)
-      {new_data, {:close, reason}} -> 
-        close(new_data, reason)
-      {new_data, reply} ->
-        new_data = send_frame(new_data, {:binary, :erlang.term_to_binary(reply)})
-        {:keep_state, new_data}
-      new_data -> 
-        {:keep_state, new_data}
+      {data, :reconnect} -> 
+        reconnect(data)
+      {data, {:close, reason}} -> 
+        close(data, reason)
+      {data, reply} ->
+        data = send_frame(data, {:binary, :erlang.term_to_binary(reply)})
+        {:keep_state, data}
+      data -> 
+        {:keep_state, data}
     end
   end
 
@@ -190,10 +179,10 @@ defmodule Magnolia.Shard do
   end
 
   defp reconnect(data) do
-    close(data)
+    close(data, :reconnect)
 
     data = %__MODULE__{
-      bot_state: data.bot_state,
+      bot_ctx: data.bot_ctx,
       gateway_url: data.gateway_url,
       seq: data.seq,
       resume_gateway_url: data.resume_gateway_url,
@@ -205,8 +194,10 @@ defmodule Magnolia.Shard do
     {:next_state, :disconnected, data, {:next_event, :internal, :reconnect}}
   end
 
-  defp close(data, reason \\ :normal) do
-    send_frame(data, {:close, 1000, ""})
+  defp close(data, reason) do
+    if reason != :reconnect do
+      send_frame(data, {:close, 1000, ""})
+    end
     Mint.HTTP.close(data.conn)
     {:stop, reason}
   end

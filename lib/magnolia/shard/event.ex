@@ -1,12 +1,14 @@
-defmodule Magnolia.Event do
+defmodule Magnolia.Shard.Event do
   require Logger
+  alias Magnolia.Shard.Payload
+  alias Magnolia.Utils
 
   def handle(%{op: 0, d: payload, t: event_name}, data) do
     payload = Magnolia.Utils.to_atom_keys(payload)
     
     {event_name, payload}
-    |> Magnolia.Payload.cast_payload()
-    |> Magnolia.Payload.dispatch_event(data)
+    |> Payload.cast_payload()
+    |> dispatch_event(data)
 
     if event_name == :READY do
       %{data | resume_gateway_url: payload.resume_gateway_url, session_id: payload.session_id}
@@ -43,11 +45,11 @@ defmodule Magnolia.Event do
     timer_ref = Process.send_after(self(), :heartbeat, trunc(:rand.uniform() * interval))
     data = %{data | heartbeat_interval: interval, timer_ref: timer_ref}
     if not is_nil(data.session_id) do
-      Logger.info("Resuming session #{data.session_id}")
-      {data, resume_payload(data)}
+      Logger.debug("Resuming session #{data.session_id}")
+      {data, Payload.resume_payload(data)}
     else
       Logger.debug("Identifying session")
-      {data, identify_payload(data)}
+      {data, Payload.identify_payload(data)}
     end
   end
 
@@ -61,32 +63,17 @@ defmodule Magnolia.Event do
     data
   end
 
-
-  defp identify_payload(data) do
-    %{
-      "op" => 2, 
-      "d" => %{
-        "token" => data.bot_state.token, 
-        "properties" => %{
-          "os" => "BEAM",
-          "browser" => "DiscordBot",
-          "device" => "Magnolia"
-        },
-        "compress" => true,
-        "intents" => 33280,
-        "shard" => [data.bot_state.shard_id, data.bot_state.total_shards]
-      }
-    }
-  end
-
-  defp resume_payload(data) do
-    %{
-      "op" => 6,
-      "d" => %{
-        "token" => data.bot_state.token,
-        "session_id" => data.session_id,
-        "seq" => data.seq
-      }
-    }
+  defp dispatch_event(event, %{bot_ctx: bot_ctx} = state) do
+    name = Utils.to_via({Magnolia.TaskSupervisors, bot_ctx.bot_id})
+    {:ok, _pid} = Task.Supervisor.start_child(
+      {:via, PartitionSupervisor, {name, state.seq}},
+      fn -> 
+        try do
+          state.consumer_module.handle_event(event, bot_ctx)
+        rescue
+          e -> Logger.error("Error in event handler: #{Exception.format(:error, e, __STACKTRACE__)}")
+        end
+      end
+    )
   end
 end
