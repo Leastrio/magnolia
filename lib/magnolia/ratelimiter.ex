@@ -1,4 +1,8 @@
 defmodule Magnolia.Ratelimiter do
+  # TODO - Handle emoji endpoints properly 
+  # + add a kv store to store generated buckets -> discord returned bucket ids
+  # use discord returned bucket ids to store the ratelimit info
+
   use GenServer
   require Logger
 
