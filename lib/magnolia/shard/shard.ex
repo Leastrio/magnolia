@@ -92,8 +92,8 @@ defmodule Magnolia.Shard do
       {:ok, conn, tcp_msg} -> 
         handle_tcp_message(tcp_msg, %{data | conn: conn})
 
-      {:error, conn, reason, _responses} -> 
-        Logger.error("WS streaming failed: #{inspect(reason)}")
+      {:error, conn, reason, responses} -> 
+        Logger.error("WS streaming failed: #{inspect(reason)} #{inspect(responses)}")
         {:keep_state, %{data | conn: conn}}
 
       :unknown -> 

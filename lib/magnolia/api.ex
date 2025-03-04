@@ -1,8 +1,18 @@
 defmodule Magnolia.Api do
-  @base_url "https://discord.com/api/v10"
+  import Magnolia.Ratelimiter, only: [request: 2]
 
   def get_gateway_bot(ctx) do
-    {:ok, req} = get(ctx, "/gateway/bot")
+    {:ok, req} = request(ctx, [method: :get, url: "/gateway/bot"])
+    req
+  end
+  
+  def create_message(ctx, channel_id, content) do
+    {:ok, req} = request(ctx, [
+      method: :post,
+      url: "/channels/{channel_id}/messages",
+      path_params: [channel_id: channel_id],
+      json: %{content: content}
+    ])
     req
   end
 
@@ -25,10 +35,5 @@ defmodule Magnolia.Api do
 
     payload = Magnolia.Shard.Payload.update_presence_payload(idle_since, activity_payload, status, afk)
     :gen_statem.cast(pid, {:update_presence, payload})
-  end
-
-  def get(%Magnolia.Struct.BotContext{bot_id: bot_id, token: token}, endpoint) do
-    req = Req.new(base_url: @base_url, url: endpoint, headers: [{"Authorization", "Bot #{token}"}], retry: :false)
-    Magnolia.Ratelimiter.request(bot_id, req)
   end
 end
